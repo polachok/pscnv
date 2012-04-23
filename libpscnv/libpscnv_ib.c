@@ -26,9 +26,11 @@ int pscnv_ib_chan_new(int fd, int vid, struct pscnv_ib_chan **res, uint32_t pb_d
 	if ((void*)rr->chmap == MAP_FAILED)
 		goto out_chmap;
 	rr->pb_dma = pb_dma;
-	ret = pscnv_obj_vdma_new(fd, rr->cid, pb_dma, 0x3d, 0, 0, 1ull << 40);
-	if (ret)
-		goto out_vdma;
+	if (/*chipset < 0xc0*/0) {
+		ret = pscnv_obj_vdma_new(fd, rr->cid, pb_dma, 0x3d, 0, 0, 1ull << 40);
+		if (ret)
+			goto out_vdma;
+	}
 	rr->ib_order = ib_order;
 	if (!ib_order)
 		rr->ib_order = 9;

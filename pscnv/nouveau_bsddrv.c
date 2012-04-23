@@ -322,6 +322,7 @@ pscnv_gem_pager_dtor(void *handle)
 	struct pscnv_bo *bo = gem_obj->driver_private;
 	struct drm_device *dev = gem_obj->dev;
 	vm_object_t devobj = cdev_pager_lookup(handle);
+	struct drm_nouveau_private *dev_priv = dev->dev_private;
 
 	if (devobj != NULL) {
 		vm_size_t page_count = OFF_TO_IDX(bo->size);
@@ -344,11 +345,18 @@ pscnv_gem_pager_dtor(void *handle)
 	if (pscnv_mem_debug > 0)
 		NV_WARN(dev, "Freed %010llx (%p)\n", bo->start, bo);
 	kfree(bo->fake_pages);
+	bo->fake_pages = NULL;
 
 	if (bo->chan)
 		pscnv_chan_unref(bo->chan);
-	else
+	else {
+		/* Unmap from bar if vram, it should no longer be needed.. */
+		if (dev_priv->vm_ok && bo->map1) {
+			pscnv_vspace_unmap_node(bo->map1);
+			bo->map1 = NULL;
+		}
 		drm_gem_object_unreference_unlocked(gem_obj);
+	}
 }
 
 static struct cdev_pager_ops pscnv_gem_pager_ops = {

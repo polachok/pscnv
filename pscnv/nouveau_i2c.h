@@ -56,12 +56,13 @@ struct i2c_board_info { const char *name; int addr; };
 struct nouveau_i2c_chan {
 #ifdef __linux__
 	struct i2c_adapter adapter;
+	struct i2c_algo_bit_data bit;
 #else
 	device_t adapter, bus, iic_dev;
 	char name[32];
+	unsigned state, type;
 #endif
 	struct drm_device *dev;
-	struct i2c_algo_bit_data bit;
 	unsigned rd;
 	unsigned wr;
 	unsigned data;
