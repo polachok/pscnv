@@ -290,7 +290,7 @@ nouveau_temp_probe_i2c(struct drm_device *dev)
 		{ I2C_BOARD_INFO("lm99", 0x4c) },
 		{ }
 	};
-	int idx = (dcb->version >= 0x40 ?
+	int idx = (dcb->version >= 0x30 ?
 		   dcb->i2c_default_indices & 0xf : 2);
 
 	nouveau_i2c_identify(dev, "monitoring device", info,

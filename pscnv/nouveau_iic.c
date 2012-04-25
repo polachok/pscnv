@@ -291,11 +291,15 @@ i2c_bit_xfer(struct nouveau_i2c_chan *port, struct i2c_msg *msgs, int num)
 				ret = i2c_get_byte(port, ptr++, !remaining);
 		} else {
 			while (!ret && remaining--)
-				ret = i2c_put_byte(port, *ptr++);
+				ret = i2c_put_byte(port, *(ptr++));
 		}
 
 		msg++;
 	}
+	if (ret < 0)
+		NV_WARN(port->dev, "i2c xfer %s on %u / %02x returns: %d\n", 
+			(msg->flags & I2C_M_RD) ? "read" : "write",
+			device_get_unit(port->adapter), msg->slave, ret);
 
 	i2c_stop(port);
 	return ret < 0 ? -ret : 0;
@@ -334,7 +338,6 @@ nouveau_i2c_init(struct drm_device *dev, struct dcb_i2c_entry *entry, int index)
 	ret = -ENODEV;
 	if (!i2c)
 		goto err;
-	i2c->adapter = idev;
 
 	ret = -EINVAL;
 	switch (entry->port_type) {
@@ -355,7 +358,7 @@ nouveau_i2c_init(struct drm_device *dev, struct dcb_i2c_entry *entry, int index)
 			}
 			i2c->rd = nv50_i2c_port[idx];
 		} else
-			i2c->rd = 0x00d014 + (entry->read * 0x20);
+			i2c->rd = 0x00d014 + (entry->read & 0xf) * 0x20;
 		i2c->wr = i2c->rd;
 		break;
 	case 6:
@@ -367,6 +370,7 @@ nouveau_i2c_init(struct drm_device *dev, struct dcb_i2c_entry *entry, int index)
 		goto err;
 	}
 
+	i2c->adapter = idev;
 	i2c->type = entry->port_type;
 	entry->chan = i2c;
 	return 0;
@@ -518,22 +522,10 @@ pscnv_iic_transfer(device_t idev, struct iic_msg *msgs, uint32_t nmsgs)
 			if (mcnt || remaining > 16)
 				cmd |= AUX_I2C_MOT;
 
+			NV_WARN(auxch->dev, "Slave is: %02x\n", msg->slave);
 			ret = nouveau_dp_auxch(auxch, cmd, msg->slave, ptr, cnt);
 			if (ret < 0)
 				return (-ret);
-
-			switch (ret & NV50_AUXCH_STAT_REPLY_I2C) {
-			case NV50_AUXCH_STAT_REPLY_I2C_ACK:
-				break;
-			case NV50_AUXCH_STAT_REPLY_I2C_NACK:
-				return (EREMOTEIO);
-			case NV50_AUXCH_STAT_REPLY_I2C_DEFER:
-				udelay(100);
-				continue;
-			default:
-				NV_ERROR(auxch->dev, "bad auxch reply: 0x%08x\n", ret);
-				return (EREMOTEIO);
-			}
 
 			ptr += cnt;
 			remaining -= cnt;

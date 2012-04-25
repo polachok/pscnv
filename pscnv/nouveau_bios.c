@@ -6484,7 +6484,10 @@ parse_dcb_table(struct drm_device *dev, struct nvbios *bios, bool twoHeads)
 	NV_TRACE(dev, "Found Display Configuration Block version %d.%d\n",
 		 dcb->version >> 4, dcb->version & 0xf);
 
-	if (dcb->version >= 0x20) { /* NV17+ */
+	if (dcb->version >= 0x41) {
+		NV_WARN(dev, "DCB version 0x%02x unknown\n", dcb->version);
+		return -EINVAL;
+	} else if (dcb->version >= 0x20) { /* NV17+ */
 		uint32_t sig;
 
 		if (dcb->version >= 0x30) { /* NV40+ */
@@ -6566,7 +6569,7 @@ parse_dcb_table(struct drm_device *dev, struct nvbios *bios, bool twoHeads)
 		 * monitoring and some external TMDS transmitters.
 		 */
 		if (dcb->version >= 0x22) {
-			int idx = (dcb->version >= 0x40 ?
+			int idx = (dcb->version >= 0x30 ?
 				   dcb->i2c_default_indices & 0xf :
 				   2);
 

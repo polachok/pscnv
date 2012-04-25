@@ -192,8 +192,8 @@ nouveau_i2c_init(struct drm_device *dev, struct dcb_i2c_entry *entry, int index)
 		i2c->bit.setscl = nv04_i2c_setscl;
 		i2c->bit.getsda = nv04_i2c_getsda;
 		i2c->bit.getscl = nv04_i2c_getscl;
-		i2c->rd = entry->read;
 		i2c->wr = entry->write;
+		i2c->rd = entry->read;
 		break;
 	case 4:
 		i2c->bit.setsda = nv4e_i2c_setsda;

@@ -34,12 +34,6 @@
 
 #else /* __linux __ */
 
-struct i2c_algo_bit_data {
-	int (*getsda)(void *data);
-	int (*getscl)(void *data);
-	void (*setsda)(void *data, int sda);
-	void (*setscl)(void *data, int sdl);
-};
 struct i2c_board_info { const char *name; int addr; };
 #define I2C_BOARD_INFO(a, b) (a), (b)
 #define I2C_M_RD IIC_M_RD
