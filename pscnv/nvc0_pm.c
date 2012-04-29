@@ -41,13 +41,12 @@ enum fuc_ops {
    fuc_ops_leave_lock
 };
 
-static u32 read_div(struct drm_device *, int, u32, u32);
+static u32 read_div(struct drm_device *, int, u32 dsrc, u32 dctl);
 static u32 read_pll(struct drm_device *, u32);
 
 static u32
-read_vco(struct drm_device *dev, u32 dsrc)
+read_vco(struct drm_device *dev, u32 ssrc)
 {
-	u32 ssrc = nv_rd32(dev, dsrc);
 	if (!(ssrc & 0x00000100))
 		return read_pll(dev, 0x00e800);
 	return read_pll(dev, 0x00e820);
@@ -109,12 +108,12 @@ read_div(struct drm_device *dev, int doff, u32 dsrc, u32 dctl)
 		return 100000;
 	case 3:
 		if (sctl & 0x80000000) {
-			u32 sclk = read_vco(dev, dsrc + (doff * 4));
+			u32 sclk = read_vco(dev, ssrc);
 			u32 sdiv = (sctl & 0x0000003f) + 2;
 			return (sclk * 2) / sdiv;
 		}
 
-		return read_vco(dev, dsrc + (doff * 4));
+		return read_vco(dev, ssrc);
 	default:
 		return 0;
 	}
@@ -221,7 +220,7 @@ calc_src(struct drm_device *dev, int clk, u32 freq, u32 *dsrc, u32 *ddiv)
 	}
 
 	/* otherwise, calculate the closest divider */
-	sclk = read_vco(dev, clk);
+	sclk = read_vco(dev, *dsrc);
 	if (clk < 7)
 		sclk = calc_div(dev, clk, sclk, freq, ddiv);
 	return sclk;
@@ -381,12 +380,6 @@ static int run_mem(struct drm_device *dev, struct nvc0_pm_state *state)
 	for (i = 0; i < 0x440; i += 4)
 		nv_wr32(dev, 0x10a1c4, 0);
 
-	if (1) {
-		NV_ERROR(dev, "No! I'm not even going to run the script!");
-		NV_ERROR(dev, "Even if neutered with exit.. just in case\n");
-		return 0;
-	}
-
 	/* Fire! */
 	nv_wr32(dev, 0x10a104, 0);
 	nv_wr32(dev, 0x10a10c, 0);
@@ -411,6 +404,9 @@ calc_mem(struct drm_device *dev, struct nvc0_pm_clock *info, u32 freq)
 	int N, M, P, ret;
 	u32 ctrl;
 
+	nv_wr32(dev, 0x137360, 0x00000001);
+	nv_wr32(dev, 0x1548, 0x80000102);
+
 	if (dev_priv->engine.pm.cur == &dev_priv->engine.pm.boot)
 		init_mem(dev);
 
@@ -422,9 +418,20 @@ calc_mem(struct drm_device *dev, struct nvc0_pm_clock *info, u32 freq)
 		 * 132000 but the binary driver ignores all my attempts to
 		 * change this value.
 		 */
-		nv_wr32(dev, 0x137320, 0x00000103);
-		nv_wr32(dev, 0x137330, 0x81200606);
-		nv_wait(dev, 0x132020, 0x00010000, 0x00010000);
+
+		/* Reset plls to clear lock */
+		nv_mask(dev, 0x132000, 0x107, 2);
+		nv_wr32(dev, 0x132000, 0x107, 0);
+		nv_wait(dev, 0x132000, 0x10000, 0x10000);
+
+		nv_mask(dev, 0x132020, 0x107, 2);
+		nv_wr32(dev, 0x132020, 0x107, 0);
+		nv_wait(dev, 0x132020, 0x10000, 0x10000);
+
+		nv_wr32(dev, 0x132100, 0x00000001);
+		nv_mask(dev, 0x132020, 0x00000007, 0x00000000);
+		nv_wr32(dev, 0x137320, 0x00000003);
+		nv_wr32(dev, 0x137330, 0x81200006);
 		nv_wr32(dev, 0x132024, 0x0001160f);
 		nv_mask(dev, 0x132020, 0x00000001, 0x00000001);
 		nv_wait(dev, 0x137390, 0x00020000, 0x00020000);
@@ -439,7 +446,7 @@ calc_mem(struct drm_device *dev, struct nvc0_pm_clock *info, u32 freq)
 		pll.refclk = read_pll(dev, 0x132020);
 		if (pll.refclk) {
 			ret = nva3_calc_pll(dev, &pll, freq, &N, NULL, &M, &P);
-			if (ret > 0) {
+			if (ret > 0 && freq > 1000000) {
 				info->coef = (P << 16) | (N << 8) | M;
 				info->freq = ret;
 				info->ddiv = nv_rd32(dev, 0x137310) | 0x08000000;
@@ -447,6 +454,7 @@ calc_mem(struct drm_device *dev, struct nvc0_pm_clock *info, u32 freq)
 				NV_WARN(dev, "freq %u, 132004: %x 137310: %x", ret, info->coef, info->ddiv);
 				return 0;
 			} else {
+				info->coef = 0;
 				info->freq = calc_src(dev, 0, freq, &info->dsrc, &info->ddiv);
 				info->ddiv |= nv_rd32(dev, 0x137310) & 0xf7ffff00;
 				NV_WARN(dev, "freq %u 137310: %08x\n", freq, info->ddiv);
@@ -455,6 +463,7 @@ calc_mem(struct drm_device *dev, struct nvc0_pm_clock *info, u32 freq)
 		}
 	}
 
+	nv_wr32(dev, 0x1548, 0x101);
 	return -EINVAL;
 }
 
@@ -564,7 +573,7 @@ static void fuc_emit(struct nvc0_pm_state *info, enum fuc_ops func, u32 len_args
 			NV_INFO(info->dev, "S: wait(I[%#x], %#x, %#x, %u)\n", args[0], args[1], args[2], args[3]);
 			break;
 		case fuc_ops_sleep:
-			NV_INFO(info->dev, "S: nsleep(%u)\n", args[0]);
+			NV_INFO(info->dev, "S: sleep(%u)\n", args[0]);
 			break;
 		case fuc_ops_enter_lock:
 			NV_INFO(info->dev, "S: enter_lock()\n");
@@ -614,6 +623,7 @@ static void fuc_wait(struct nvc0_pm_state *info, u32 reg, u32 mask, u32 val, u32
 static void fuc_enter_lock(struct nvc0_pm_state *info)
 {
 	struct drm_nouveau_private *dev_priv = info->dev->dev_private;
+
 	u32 args[4] = { 0x1f100, 4, 0, 50000000 };
 	fuc_emit(info, fuc_ops_wait_mask_iord, 4, args, 1);
 	args[2] = args[1];
@@ -629,8 +639,10 @@ static void fuc_enter_lock(struct nvc0_pm_state *info)
 static void fuc_leave_lock(struct nvc0_pm_state *info)
 {
 	struct drm_nouveau_private *dev_priv = info->dev->dev_private;
+	fuc_emit(info, fuc_ops_leave_lock, 0, 0, 0);
+
 	if (dev_priv->chipset < 0xd0)
-		fuc_wr32(info, 0x611200, 0x00003300);
+		fuc_wr32(info, 0x611200, 0x00003330);
 	else
 		fuc_wr32(info, 0x62c000, 0x03030300);
 }
@@ -650,11 +662,28 @@ mclk_refresh(struct nouveau_mem_exec_func *exec)
 static void
 mclk_refresh_auto(struct nouveau_mem_exec_func *exec, bool enable)
 {
+	struct nvc0_pm_state *info = exec->priv;
+	u32 pll = info->mem.coef;
 	if (!enable) {
-		fuc_wr32(exec->priv, 0x10f200, nv_rd32(exec->dev, 0x10f200) & ~0x800);
-		fuc_wr32(exec->priv, 0x10f808, nv_rd32(exec->dev, 0x10f808) & ~0); // XXX: What mask? None noticed..
+		if (pll && 1) {
+			fuc_wr32(exec->priv, 0xe108, nv_rd32(exec->dev, 0xe108) & ~0x100);
+			fuc_sleep(exec->priv, 20000);
+		}
+		fuc_wr32(exec->priv, 0x10f200,
+			 nv_rd32(exec->dev, 0x10f200) & ~(pll ? 0x800 : 0x8800));
+		fuc_wr32(exec->priv, 0x10f808, // XXX: Correct?
+			 (nv_rd32(exec->dev, 0x10f808) & 0xfff7ffff) | 0x48020000);
 	}
 	fuc_wr32(exec->priv, 0x10f210, enable ? 0x80000000 : 0x00000000);
+	if (!enable) {
+		u32 pll = info->mem.coef;
+		fuc_sleep(exec->priv, 1000);
+		if (!pll) {
+			fuc_wr32(exec->priv, 0x10f910, nv_rd32(exec->dev, 0x10f910) & 0x000fffff);
+			fuc_wr32(exec->priv, 0x10f914, nv_rd32(exec->dev, 0x10f914) & 0x000fffff);
+		}
+		mclk_refresh(exec);
+	}
 }
 
 static void
@@ -737,25 +766,25 @@ mclk_clock_set(struct nouveau_mem_exec_func *exec)
 //up: 10f824: 0x7e77 -> 0x7fd4 (setting 0x100, altering low bits
 //down: 10f824: 0x7fd4 -> 0x7e54 (old & 0x77) -> 7e77 (setting new bits)
 
-	nv_wr32(dev, 0x137360, 0x00000001);
 	fuc_wr32(info, 0x10f090, 0x61);
 	fuc_wr32(info, 0x10f090, 0xc000007f);
 	fuc_sleep(info, 1000);
 
 	// Bla bla clock stuff
 	if (pll) {
-		fuc_wr32(info, 0x10f824, (nv_rd32(dev, 0x10f824) & ~0xff) | 0x1d4);
+		fuc_wr32(info, 0x10f824, 0x7fd4);
 		fuc_wr32(info, 0x10f800, nv_rd32(dev, 0x10f800) & ~0x4);
 		fuc_sleep(info, 558);
 
 		fuc_wr32(info, 0x1373ec, 0); // XXX: Generated somehow?
+		fuc_wr32(info, 0x10f200, nv_rd32(dev, 0x10f200) & ~0x0800);
 		fuc_wr32(info, 0x1373f0, 3);
 		fuc_wr32(info, 0x10f830, 0x40700010);
 		fuc_wr32(info, 0x10f830, 0x40500010);
 		fuc_sleep(info, 372);
 		fuc_wr32(info, 0x1373f8, 0); // & ~0x2000 ??
 		fuc_wr32(info, 0x132100, 0x101);
-		fuc_wr32(info, 0x137310, 0x89201616); // XXX Generated
+		fuc_wr32(info, 0x137310, info->mem.ddiv);
 		fuc_wr32(info, 0x10f050, 0xff000090);
 		fuc_wr32(info, 0x1373ec, 0x30000); // XXX: Generated
 		fuc_wr32(info, 0x1373f0, 2);
@@ -763,31 +792,31 @@ mclk_clock_set(struct nouveau_mem_exec_func *exec)
 		fuc_wr32(info, 0x1373f8, 0x2000); // |= 0x2000 again?
 		fuc_sleep(info, 2000);
 
-		fuc_wr32(info, 0x10f808, (info->mem_10f808 & ~0x30000000) | (nv_rd32(dev, 0x10f808) & 0x30000000));
+		fuc_wr32(info, 0x10f808, (info->mem_10f808 & ~0x30080000) | (nv_rd32(dev, 0x10f808) & 0x3ff20000)); // TODO?
 		fuc_wr32(info, 0x10f830, 0x500010);
-		fuc_wr32(info, 0x10f200, nv_rd32(dev, 0x10f200) & ~0x8800);
+		fuc_wr32(info, 0x10f200, nv_rd32(dev, 0x10f200) & ~0x00008800);
 	} else {
 		fuc_wr32(info, 0x1373ec, 0x20000); // XXX: Generated
-		fuc_wr32(info, 0x10f808, nv_rd32(dev, 0x10f808) & ~0x80000);
-		fuc_wr32(info, 0x10f200, nv_rd32(dev, 0x10f200) & ~0x8800);
+		fuc_wr32(info, 0x10f808, nv_rd32(dev, 0x10f808) & ~0x00080000);
+		fuc_wr32(info, 0x10f200, nv_rd32(dev, 0x10f200) & ~0x00008800);
 		fuc_wr32(info, 0x10f830, 0x41500010);
 		fuc_wr32(info, 0x10f830, 0x40500010);
 		fuc_sleep(info, 50);
 
 		fuc_wr32(info, 0x132100, 0x101);
-		fuc_wr32(info, 0x137310, 0x89201608);
+		fuc_wr32(info, 0x137310, info->mem.ddiv | 0x8000000);
 		fuc_wr32(info, 0x10f050, 0xff000090);
 		fuc_wr32(info, 0x1373ec, 0x20f0f);
 		fuc_wr32(info, 0x1373f0, 3);
-		fuc_wr32(info, 0x137310, 0x81201608);
+		fuc_wr32(info, 0x137310, info->mem.ddiv);
 		fuc_wr32(info, 0x132100, 1);
 
 		fuc_wr32(info, 0x10f830, 0x300017);
 		fuc_sleep(info, 100);
 		fuc_wr32(info, 0x10f824, 0x7e77);
 		fuc_sleep(info, 100);
-		fuc_wr32(info, 0x132000, nv_rd32(dev, 0x132000) & ~0); // TODO
-		//fuc_wr32(info, 0x10f808, (info->mem_10f808 & ~0x30000000), nv_rd32(dev, 0x10f808) & 0x30000000);
+		fuc_wr32(info, 0x132000, nv_rd32(dev, 0x132000) & 0xfffffffe); // TODO
+		//fuc_wr32(info, 0x10f808, (info->mem_10f808 & ~0x30000000), nv_rd32(dev, 0x10f808) & 0x30000000); TODO
 	}
 	fuc_wr32(info, 0x10f090, 0x4000007e);
 	fuc_sleep(info, 2000);
@@ -807,7 +836,7 @@ mclk_timing_set(struct nouveau_mem_exec_func *exec)
 
 	for (i = 0; i < 5; i++) {
 		u32 val = perflvl->timing.reg[i];
-		if (i == 3 && pll)
+		if (i == 2 && pll)
 			val &= ~0xff;
 		fuc_wr32(info, 0x10f290 + (i * 4), val);
 	}
@@ -829,10 +858,11 @@ mclk_timing_set(struct nouveau_mem_exec_func *exec)
 	}
 
 	fuc_wr32(info, 0x10f808, info->mem_10f808);
-	for (i = 5; i < 9; ++i)
-		if (perflvl->timing.reg[i] != nv_rd32(dev, 0x10f32c + (i * 4)))
-			fuc_wr32(info, 0x10f32c + (i * 4), perflvl->timing.reg[i]);
+	if (1 && pll) // XXX Hardcoded and different per card
+		fuc_wr32(info, 0x10f870, 0x99999999);
 }
+
+#define DRY 1
 
 static void
 prog_mem(struct drm_device *dev, struct nvc0_pm_state *info)
@@ -852,10 +882,27 @@ prog_mem(struct drm_device *dev, struct nvc0_pm_state *info)
 	};
 	int i, pll = info->mem.coef, mcs = nv_rd32(dev, 0x121c74);
 
+	if (!pll && !DRY) {
+		nv_wr32(dev, 0x10f468, 0x1005);
+		nv_wr32(dev, 0x10f420, 0x42);
+		nv_wr32(dev, 0x10f430, 0x40);
+		nv_mask(dev, 0x10f400, 0x1f, 0x07);
+		nv_wr32(dev, 0x10f410, 0x307);
+		nv_wr32(dev, 0x10f444, 0x4cc009f);
+	}
+
 	/* Not yet, do not even TRY to run what we generate.. */
-	fuc_emit(info, fuc_ops_done, 0, 0, 0);
+	if (DRY)
+		fuc_emit(info, fuc_ops_done, 0, 0, 0);
 
 	if (pll) {
+		u32 r132000 = nv_rd32(dev, 0x132000);
+		if (r132000 & 1)
+			fuc_wr32(info, 0x132000, r132000 & ~0x101);
+		fuc_wr32(info, 0x132004, info->mem.coef);
+		fuc_wr32(info, 0x132000, r132000 | 0x101);
+		fuc_wait(info, 0x137390, 0x00000002, 0x00000002, 500000);
+
 		fuc_wr32(info, 0x10fb04, 0x55550000);
 		fuc_wr32(info, 0x10fb08, 0x55550000);
 		// Why do you look like a PLL so much?
@@ -864,31 +911,51 @@ prog_mem(struct drm_device *dev, struct nvc0_pm_state *info)
 		fuc_wr32(info, 0x10f990, 0x20012001);
 		fuc_wr32(info, 0x10f998, 0x11a00);
 		fuc_sleep(info, 1000);
+		info->mem_10f808 = 0x7aaa0050;
 	} else {
 		fuc_wr32(info, 0x10f988, 0x20010000);
 		fuc_wr32(info, 0x10f98c, 0);
 		fuc_wr32(info, 0x10f990, 0x20012001);
-		fuc_wr32(info, 0x10f998, 0x11a00);
+		fuc_wr32(info, 0x10f998, 0x10a00);
+		info->mem_10f808 = 0x48020050;
 	}
 
 	fuc_wr32(info, 0x100b0c, (nv_rd32(dev, 0x100b0c) & ~0xff) | 0x12);
 	fuc_enter_lock(info);
 	nouveau_mem_exec(&exec, info->perflvl);
+	fuc_sleep(info, 160);
 	if (pll) {
+		fuc_wr32(info, 0x61c140, 0x9a40000); // XXX?
+		if (1) {// XXX Hardcoded and different per card, sometimes per MC or something
+			fuc_wr32(info, 0x10f644, 0x44444444);
+			fuc_wr32(info, 0x10f640, 0x11111111);
+		}
 		fuc_wr32(info, 0x10f910, 0x800e1008);
 		fuc_wr32(info, 0x10f914, 0x800e1008);
+		fuc_sleep(info, 26);
 		for (i = 0; i < mcs; ++i)
 			fuc_wait(info, 0x110974 + i * 0x1000, 0xf, 0, 500000);
+		fuc_sleep(info, 1000);
 		fuc_wr32(info, 0x10f800, nv_rd32(info->dev, 0x10f800));
 	} else {
+		fuc_wr32(info, 0x61c140, 0x19240000); // XXX?
+		if (1) { // XXX GTX 480
+			fuc_wr32(exec->priv, 0xe108, nv_rd32(exec->dev, 0xe108) & ~0x100);
+			fuc_sleep(exec->priv, 20000);
+		}
+		fuc_wr32(info, 0x10f628, 0);
 		fuc_wr32(info, 0x10f910, 0x80021001);
 		fuc_wr32(info, 0x10f914, 0x80021001);
+		fuc_sleep(info, 200);
 		for (i = 0; i < mcs; ++i)
 			fuc_wait(info, 0x110974 + i * 0x1000, 0xf, 0, 500000);
 		fuc_wr32(info, 0x10f910, 0x80081001);
 		fuc_wr32(info, 0x10f914, 0x80081001);
+		fuc_sleep(info, 50);
 		for (i = 0; i < mcs; ++i)
 			fuc_wait(info, 0x110974 + i * 0x1000, 0xf, 0, 500000);
+		fuc_wr32(info, 0x10f830, 0x1300017);
+		fuc_wr32(info, 0x10f830, 0x300017);
 	}
 	fuc_leave_lock(info);
 	if (pll) {
@@ -897,11 +964,23 @@ prog_mem(struct drm_device *dev, struct nvc0_pm_state *info)
 		fuc_wr32(info, 0x10f9b4, 0x2f50);
 		fuc_wr32(info, 0x10f910, 0x10c1001);
 		fuc_wr32(info, 0x10f914, 0x10c1001);
-	}
+	} else
+		fuc_sleep(info, 200);
 	fuc_wr32(info, 0x100b0c, nv_rd32(dev, 0x100b0c));
 	fuc_emit(info, fuc_ops_done, 0, 0, 0);
 	run_mem(dev, info);
 	nv_mask(dev, 0x10f200, 0x800, 0x800);
+	nv_wr32(dev, 0x1548, 0x102);
+	// TODO: hammer in 10f4* regs
+	if (pll && !DRY) {
+		nv_wr32(dev, 0x10f468, 0x20020);
+		nv_wr32(dev, 0x10f420, 0x43);
+		nv_wr32(dev, 0x10f430, 0x41);
+		nv_mask(dev, 0x10f400, 0x1f, 0x1f);
+		nv_wr32(dev, 0x10f410, 0x307);
+		nv_wr32(dev, 0x10f444, 0x4cc883f);
+	}
+	nv_wr32(dev, 0x1548, 0x101);
 }
 
 int

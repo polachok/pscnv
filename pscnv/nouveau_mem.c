@@ -189,9 +189,9 @@ nvc0_mem_timing_calc(struct drm_device *dev, u32 freq,
 	t->reg[4] = (boot->reg[4] & 0xfff00fff) |
 		    (e->tRRD&0x1f) << 15;
 
-	NV_DEBUG(dev, "Entry %d: 290: %08x %08x %08x %08x\n", t->id,
+	NV_WARN(dev, "Entry %d: 290: %08x %08x %08x %08x\n", t->id,
 		 t->reg[0], t->reg[1], t->reg[2], t->reg[3]);
-	NV_DEBUG(dev, "         2a0: %08x\n", t->reg[4]);
+	NV_WARN(dev, "         2a0: %08x\n", t->reg[4]);
 	return 0;
 }
 
@@ -390,11 +390,14 @@ nouveau_mem_gddr5_mr(struct drm_device *dev, u32 freq,
 	/* I suspect the remainder is in ramcfg rather than memtiming */
 	t->mr[4] = boot->mr[4]; /* Error detection, probably never touched */
 	t->mr[5] = boot->mr[5] & ~6; /* Figure out when LP3/LP2 is set */
-	t->mr[6] = boot->mr[6]; /* Figure out when changed? WCK PIN */
-	t->mr[7] = boot->mr[7]; /* Half VREFD and LF mode are important here */
+	t->mr[6] = boot->mr[6] & ~1; /* Figure out when changed? WCK PIN */
+	t->mr[7] = boot->mr[7] & ~0x88; /* Half VREFD and LF mode are important here */
 	t->mr[8] = boot->mr[8]; /* seems to always be untouched */
 
-	NV_DEBUG(dev, "(%u) MR: %08x %08x %08x", t->id, t->mr[0], t->mr[1], t->mr[3]);
+	NV_WARN(dev, "(%u) MR: %08x %08x %08x %08x %08x\n",
+		t->id, t->mr[0], t->mr[1], t->mr[2], t->mr[3], t->mr[4]);
+	NV_WARN(dev, "(%u)   : %08x %08x %08x %08x\n",
+		t->id, t->mr[5], t->mr[6], t->mr[7], t->mr[8]);
 	return 0;
 }
 
@@ -412,6 +415,7 @@ nouveau_mem_timing_calc(struct drm_device *dev, u32 freq,
 	ptr = nouveau_perf_timing(dev, freq, &ver, &len);
 	if (!ptr || ptr[0] == 0x00) {
 		*t = *boot;
+		NV_WARN(dev, "Couldn't look up timing for %u\n", freq);
 		return 0;
 	}
 	e = (struct nouveau_pm_tbl_entry *)ptr;
@@ -434,8 +438,10 @@ nouveau_mem_timing_calc(struct drm_device *dev, u32 freq,
 		break;
 	}
 
-	if (ret)
+	if (ret) {
+		NV_WARN(dev, "Failed with %i\n", ret);
 		return ret;
+	}
 
 	switch (dev_priv->vram_type) {
 	case NV_MEM_TYPE_GDDR3:
@@ -455,6 +461,8 @@ nouveau_mem_timing_calc(struct drm_device *dev, u32 freq,
 		ret = -EINVAL;
 		break;
 	}
+	if (ret)
+		NV_WARN(dev, "Failed mr with %i\n", ret);
 
 	ramcfg = nouveau_perf_ramcfg(dev, freq, &ver, &len);
 	if (ramcfg) {
@@ -466,6 +474,8 @@ nouveau_mem_timing_calc(struct drm_device *dev, u32 freq,
 			dll_off = !!(ramcfg[2] & 0x40);
 
 		switch (dev_priv->vram_type) {
+		case NV_MEM_TYPE_GDDR5:
+			break;
 		case NV_MEM_TYPE_GDDR3:
 			t->mr[1] &= ~0x00000040;
 			t->mr[1] |=  0x00000040 * dll_off;
@@ -561,7 +571,7 @@ nouveau_mem_exec(struct nouveau_mem_exec_func *exec,
 	struct drm_nouveau_private *dev_priv = exec->dev->dev_private;
 	struct nouveau_pm_memtiming *info = &perflvl->timing;
 	u32 tMRD = 1000, tCKSRE = 0, tCKSRX = 0, tXS = 0, tDLLK = 0;
-	u32 mr[9] = { info->mr[0], info->mr[1], info->mr[2] };
+	u32 mr[9];
 	u32 mr1_dlloff;
 	int i;
 
@@ -633,6 +643,9 @@ nouveau_mem_exec(struct nouveau_mem_exec_func *exec,
 	exec->refresh_self(exec, false);
 	exec->refresh_auto(exec, true);
 	exec->wait(exec, tXS);
+	if (dev_priv->vram_type == NV_MEM_TYPE_GDDR5 &&
+	    mr[3] != info->mr[3])
+		exec->mrs (exec, 3, info->mr[3]);
 
 	/* update MRs */
 	if (mr[2] != info->mr[2]) {
@@ -656,9 +669,14 @@ nouveau_mem_exec(struct nouveau_mem_exec_func *exec,
 
 	/* DLL (enable + ) reset */
 	if (dev_priv->vram_type == NV_MEM_TYPE_GDDR5) {
-		for (i = 3; i < 8; ++i)
-			if (mr[i] != info->mr[i])
+		for (i = 4; i < 8; ++i) {
+			NV_WARN(exec->dev, "mr[%i] = %08x or %08x\n",
+				i, mr[i], info->mr[i]);
+			if (mr[i] != info->mr[i]) {
 				exec->mrs(exec, i, info->mr[i]);
+				exec->wait(exec, tMRD);
+			}
+		}
 		if (mr[8] != info->mr[8])
 			exec->mrs(exec, 15, info->mr[8]);
 	} else if (!(info->mr[1] & mr1_dlloff)) {

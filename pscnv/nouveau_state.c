@@ -791,6 +791,7 @@ bool nouveau_wait_until(struct drm_device *dev, uint64_t timeout,
 			return true;
 	} while (nv04_timer_read(dev) - start < timeout);
 
+	WARN(1, "wait timed out.. %08x & %08x = %08x failed\n", reg, mask, val);
 	return false;
 }
 
