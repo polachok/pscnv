@@ -112,7 +112,7 @@ module_param_named(perflvl, nouveau_perflvl, charp, 0400);
 
 MODULE_PARM_DESC(perflvl_wr, "Allow perflvl changes (warning: dangerous!)\n");
 int nouveau_perflvl_wr;
-module_param_named(perflvl_wr, nouveau_perflvl_wr, int, 0400);
+module_param_named(perflvl_wr, nouveau_perflvl_wr, int, 0600);
 
 MODULE_PARM_DESC(mm_debug, "mm debug level: 0-2.");
 int pscnv_mm_debug = 0;
@@ -133,6 +133,14 @@ module_param_named(ramht_debug, pscnv_ramht_debug, int, 0400);
 MODULE_PARM_DESC(gem_debug, "GEM debug level: 0-1.");
 int pscnv_gem_debug = 0;
 module_param_named(gem_debug, pscnv_gem_debug, int, 0400);
+
+MODULE_PARM_DESC(mem_model, "model to use for nvc0 memory reclocking 480 = gtx480 2050 = tesla 2050");
+int pscnv_mem_model = 0;
+module_param_named(mem_model, pscnv_mem_model, int, 0400);
+
+MODULE_PARM_DESC(mem_dry, "memory dry run");
+int pscnv_mem_dry = 1;
+module_param_named(mem_dry, pscnv_mem_dry, int, 0600);
 
 int nouveau_fbpercrtc;
 #if 0

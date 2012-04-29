@@ -431,6 +431,9 @@ nouveau_mem_timing_calc(struct drm_device *dev, u32 freq,
 		break;
 	case NV_D0:
 	case NV_C0:
+		// Don't bother adding any timing except highest, so only boot and highest work
+		if (freq < 1000000)
+			return -EINVAL;
 		ret = nvc0_mem_timing_calc(dev, freq, e, len, boot, t);
 		break;
 	default:

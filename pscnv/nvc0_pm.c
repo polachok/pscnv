@@ -421,11 +421,11 @@ calc_mem(struct drm_device *dev, struct nvc0_pm_clock *info, u32 freq)
 
 		/* Reset plls to clear lock */
 		nv_mask(dev, 0x132000, 0x107, 2);
-		nv_wr32(dev, 0x132000, 0x107, 0);
+		nv_mask(dev, 0x132000, 0x107, 0);
 		nv_wait(dev, 0x132000, 0x10000, 0x10000);
 
 		nv_mask(dev, 0x132020, 0x107, 2);
-		nv_wr32(dev, 0x132020, 0x107, 0);
+		nv_mask(dev, 0x132020, 0x107, 0);
 		nv_wait(dev, 0x132020, 0x10000, 0x10000);
 
 		nv_wr32(dev, 0x132100, 0x00000001);
@@ -665,12 +665,12 @@ mclk_refresh_auto(struct nouveau_mem_exec_func *exec, bool enable)
 	struct nvc0_pm_state *info = exec->priv;
 	u32 pll = info->mem.coef;
 	if (!enable) {
-		if (pll && 1) {
+		if (pscnv_mem_model == 480 && pll) {
 			fuc_wr32(exec->priv, 0xe108, nv_rd32(exec->dev, 0xe108) & ~0x100);
 			fuc_sleep(exec->priv, 20000);
 		}
 		fuc_wr32(exec->priv, 0x10f200,
-			 nv_rd32(exec->dev, 0x10f200) & ~(pll ? 0x800 : 0x8800));
+			 (nv_rd32(exec->dev, 0x10f200) & ~(pll ? 0x800 : 0x8800)));
 		fuc_wr32(exec->priv, 0x10f808, // XXX: Correct?
 			 (nv_rd32(exec->dev, 0x10f808) & 0xfff7ffff) | 0x48020000);
 	}
@@ -772,12 +772,14 @@ mclk_clock_set(struct nouveau_mem_exec_func *exec)
 
 	// Bla bla clock stuff
 	if (pll) {
+		u32 r10f200_extra = pscnv_mem_model == 2050 ? 0x18000000 : 0;
+		u32 r3ec = pscnv_mem_model == 2050 ? 0x30404 : 0x30000;
 		fuc_wr32(info, 0x10f824, 0x7fd4);
 		fuc_wr32(info, 0x10f800, nv_rd32(dev, 0x10f800) & ~0x4);
 		fuc_sleep(info, 558);
 
-		fuc_wr32(info, 0x1373ec, 0); // XXX: Generated somehow?
-		fuc_wr32(info, 0x10f200, nv_rd32(dev, 0x10f200) & ~0x0800);
+		fuc_wr32(info, 0x1373ec, (r3ec & 0xf) ? (r3ec & 0xfffeffff) : 0); // XXX: Generated somehow?
+		fuc_wr32(info, 0x10f200, r10f200_extra | (nv_rd32(dev, 0x10f200) & ~0x0800));
 		fuc_wr32(info, 0x1373f0, 3);
 		fuc_wr32(info, 0x10f830, 0x40700010);
 		fuc_wr32(info, 0x10f830, 0x40500010);
@@ -786,19 +788,23 @@ mclk_clock_set(struct nouveau_mem_exec_func *exec)
 		fuc_wr32(info, 0x132100, 0x101);
 		fuc_wr32(info, 0x137310, info->mem.ddiv);
 		fuc_wr32(info, 0x10f050, 0xff000090);
-		fuc_wr32(info, 0x1373ec, 0x30000); // XXX: Generated
+		fuc_wr32(info, 0x1373ec, r3ec); // XXX: Generated
 		fuc_wr32(info, 0x1373f0, 2);
 		fuc_wr32(info, 0x132100, 1);
 		fuc_wr32(info, 0x1373f8, 0x2000); // |= 0x2000 again?
 		fuc_sleep(info, 2000);
 
-		fuc_wr32(info, 0x10f808, (info->mem_10f808 & ~0x30080000) | (nv_rd32(dev, 0x10f808) & 0x3ff20000)); // TODO?
+		fuc_wr32(info, 0x10f808, (info->mem_10f808 & 0xcff7ffff) | (nv_rd32(dev, 0x10f808) & 0x3ff20000)); // TODO?
 		fuc_wr32(info, 0x10f830, 0x500010);
-		fuc_wr32(info, 0x10f200, nv_rd32(dev, 0x10f200) & ~0x00008800);
+		fuc_wr32(info, 0x10f200, r10f200_extra | (nv_rd32(dev, 0x10f200) & ~0x00008800));
 	} else {
-		fuc_wr32(info, 0x1373ec, 0x20000); // XXX: Generated
-		fuc_wr32(info, 0x10f808, nv_rd32(dev, 0x10f808) & ~0x00080000);
-		fuc_wr32(info, 0x10f200, nv_rd32(dev, 0x10f200) & ~0x00008800);
+		u32 reg;
+		fuc_wr32(info, 0x1373ec, nv_rd32(dev, 0x1373ec) & 0xfffeffff); // XXX: Generated
+		fuc_wr32(info, 0x10f808, nv_rd32(dev, 0x10f808) & 0xfff7ffff);
+		fuc_wr32(info, 0x10f200, nv_rd32(dev, 0x10f200) & 0xe7ff77ff);
+		reg = nv_rd32(dev, 0x10f800);
+		if (!(reg & 4))
+			fuc_wr32(info, 0x10f800, reg | 4);
 		fuc_wr32(info, 0x10f830, 0x41500010);
 		fuc_wr32(info, 0x10f830, 0x40500010);
 		fuc_sleep(info, 50);
@@ -858,11 +864,9 @@ mclk_timing_set(struct nouveau_mem_exec_func *exec)
 	}
 
 	fuc_wr32(info, 0x10f808, info->mem_10f808);
-	if (1 && pll) // XXX Hardcoded and different per card
-		fuc_wr32(info, 0x10f870, 0x99999999);
+	if (pscnv_mem_model == 480) // XXX GTX 480
+		fuc_wr32(info, 0x10f870, pll ? 0x99999999 : 0);
 }
-
-#define DRY 1
 
 static void
 prog_mem(struct drm_device *dev, struct nvc0_pm_state *info)
@@ -882,7 +886,7 @@ prog_mem(struct drm_device *dev, struct nvc0_pm_state *info)
 	};
 	int i, pll = info->mem.coef, mcs = nv_rd32(dev, 0x121c74);
 
-	if (!pll && !DRY) {
+	if (!pll && !pscnv_mem_dry) {
 		nv_wr32(dev, 0x10f468, 0x1005);
 		nv_wr32(dev, 0x10f420, 0x42);
 		nv_wr32(dev, 0x10f430, 0x40);
@@ -892,7 +896,7 @@ prog_mem(struct drm_device *dev, struct nvc0_pm_state *info)
 	}
 
 	/* Not yet, do not even TRY to run what we generate.. */
-	if (DRY)
+	if (pscnv_mem_dry)
 		fuc_emit(info, fuc_ops_done, 0, 0, 0);
 
 	if (pll) {
@@ -913,6 +917,8 @@ prog_mem(struct drm_device *dev, struct nvc0_pm_state *info)
 		fuc_sleep(info, 1000);
 		info->mem_10f808 = 0x7aaa0050;
 	} else {
+		fuc_wr32(info, 0x137310, info->mem.ddiv);
+		fuc_wr32(info, 0x137300, info->mem.dsrc);
 		fuc_wr32(info, 0x10f988, 0x20010000);
 		fuc_wr32(info, 0x10f98c, 0);
 		fuc_wr32(info, 0x10f990, 0x20012001);
@@ -926,7 +932,7 @@ prog_mem(struct drm_device *dev, struct nvc0_pm_state *info)
 	fuc_sleep(info, 160);
 	if (pll) {
 		fuc_wr32(info, 0x61c140, 0x9a40000); // XXX?
-		if (1) {// XXX Hardcoded and different per card, sometimes per MC or something
+		if (pscnv_mem_model == 480) {// XXX GTX 480
 			fuc_wr32(info, 0x10f644, 0x44444444);
 			fuc_wr32(info, 0x10f640, 0x11111111);
 		}
@@ -936,12 +942,15 @@ prog_mem(struct drm_device *dev, struct nvc0_pm_state *info)
 		for (i = 0; i < mcs; ++i)
 			fuc_wait(info, 0x110974 + i * 0x1000, 0xf, 0, 500000);
 		fuc_sleep(info, 1000);
-		fuc_wr32(info, 0x10f800, nv_rd32(info->dev, 0x10f800));
+		if (pscnv_mem_model != 2050)
+			fuc_wr32(info, 0x10f800, nv_rd32(info->dev, 0x10f800));
 	} else {
 		fuc_wr32(info, 0x61c140, 0x19240000); // XXX?
-		if (1) { // XXX GTX 480
-			fuc_wr32(exec->priv, 0xe108, nv_rd32(exec->dev, 0xe108) & ~0x100);
-			fuc_sleep(exec->priv, 20000);
+		if (pscnv_mem_model == 480) { // XXX GTX 480
+			fuc_wr32(info, 0x10f644, 0xdddddddd);
+			fuc_wr32(info, 0x10f640, 0x00000000);
+			fuc_wr32(info, 0xe108, nv_rd32(info->dev, 0xe108) & ~0x100);
+			fuc_sleep(info, 20000);
 		}
 		fuc_wr32(info, 0x10f628, 0);
 		fuc_wr32(info, 0x10f910, 0x80021001);
@@ -972,7 +981,7 @@ prog_mem(struct drm_device *dev, struct nvc0_pm_state *info)
 	nv_mask(dev, 0x10f200, 0x800, 0x800);
 	nv_wr32(dev, 0x1548, 0x102);
 	// TODO: hammer in 10f4* regs
-	if (pll && !DRY) {
+	if (pll && !pscnv_mem_dry) {
 		nv_wr32(dev, 0x10f468, 0x20020);
 		nv_wr32(dev, 0x10f420, 0x43);
 		nv_wr32(dev, 0x10f430, 0x41);
@@ -990,7 +999,7 @@ nvc0_pm_clocks_set(struct drm_device *dev, void *data)
 	struct nvc0_pm_state *info = data;
 	int i;
 
-	if (info->mem.freq && dev_priv->vram_type == NV_MEM_TYPE_GDDR5)
+	if (info->mem.freq && dev_priv->vram_type == NV_MEM_TYPE_GDDR5 && pscnv_mem_model > 0)
 		prog_mem(dev, info);
 
 	for (i = 0; i < 16; i++) {

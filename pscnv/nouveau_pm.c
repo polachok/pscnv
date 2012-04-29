@@ -218,9 +218,6 @@ nouveau_pm_trigger(struct drm_device *dev)
 				h += crtc->mode.vdisplay;
 			}
 		}
-
-		if (w * h > 1920 * 1200)
-			perflvl = &pm->perflvl[pm->nr_perflvl - 1];
 	}
 
 	/* change perflvl, if necessary */
